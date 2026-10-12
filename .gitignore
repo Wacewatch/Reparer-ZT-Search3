@@ -7,6 +7,10 @@ out-tsc
 *.tsbuildinfo
 .expo
 .expo-shared
+.pythonlibs/
+__pycache__/
+*.py[cod]
+artifacts/zt-search/backend/.data/
 
 # dependencies
 node_modules

@@ -1,0 +1,49 @@
+kind = "web"
+previewPath = "/"
+title = "ZT Search"
+description = "Application web de recherche ZT permettant de parcourir les films, séries, jeux et anime, puis d’accéder aux détails et aux liens disponibles."
+version = "1.0.0"
+id = "artifacts/zt-search"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25543
+
+[services.development]
+run = "pnpm --filter @workspace/zt-search run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/zt-search", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/zt-search/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25543"
+BASE_PATH = "/"
+
+[[services]]
+name = "search-api"
+paths = [ "/zt-api" ]
+localPort = 25544
+
+[services.development]
+run = "cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 25544"
+
+[services.production]
+build = [ "python", "-m", "pip", "install", "-r", "backend/requirements.txt" ]
+
+[services.production.run]
+args = [ "sh", "-c", "cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 25544" ]
+
+[services.production.health.startup]
+path = "/zt-api/api/status"
+
+[services.env]
+PORT = "25544"
+ZT_DATA_DIR = ".data"

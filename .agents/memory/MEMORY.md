@@ -1,0 +1,1 @@
+- [Artifact service path prefixes](artifact-service-path-prefixes.md) — mounted paths are preserved; backend routes must accept the full prefix, and commands run from the artifact directory.

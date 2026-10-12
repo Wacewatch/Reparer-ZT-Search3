@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: zt-search
+    description: Search and relay services provided by the imported ZT Search backend
 paths:
   /healthz:
     get:
@@ -24,7 +26,189 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /categories:
+    get:
+      operationId: getContentCategories
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: List available content categories
+      responses:
+        "200":
+          description: Available categories
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CategoriesResponse"
+  /search:
+    get:
+      operationId: searchContent
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Search titles
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: type
+          in: query
+          schema: { type: string, default: movie }
+      responses:
+        "200":
+          description: Matching titles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchResponse"
+  /latest:
+    get:
+      operationId: getLatestContent
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: List recently added titles
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string, default: movie }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 48, default: 24 }
+      responses:
+        "200":
+          description: Latest titles
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LatestResponse"
+  /detail:
+    get:
+      operationId: getContentDetail
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Get title details and available links
+      parameters:
+        - name: urls
+          in: query
+          required: true
+          description: Comma-separated detail page URLs
+          schema: { type: string }
+      responses:
+        "200":
+          description: Merged title details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetailResponse"
+  /liens:
+    get:
+      operationId: getContentLinks
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Find title links by TMDB ID
+      parameters:
+        - name: media_type
+          in: query
+          required: true
+          schema: { type: string, enum: [film, serie] }
+        - name: tmdb_id
+          in: query
+          required: true
+          schema: { type: integer }
+        - name: title
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Title and available links
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LinksResponse"
+  /status:
+    get:
+      operationId: getSourceStatus
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Check the search backend
+      responses:
+        "200":
+          description: Backend and source status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceStatus"
+  /settings:
+    get:
+      operationId: getSourceSettings
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Read source settings
+      parameters:
+        - $ref: "#/components/parameters/AdminKey"
+      responses:
+        "200":
+          description: Source settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceSettings"
+        "401":
+          description: Invalid administrator key
+    put:
+      operationId: saveSourceSettings
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Save source settings
+      parameters:
+        - $ref: "#/components/parameters/AdminKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SourceSettingsInput"
+      responses:
+        "200":
+          description: Settings saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OkResponse"
+        "401":
+          description: Invalid administrator key
+  /status/test:
+    post:
+      operationId: testContentSources
+      tags: [zt-search]
+      servers:
+        - url: /zt-api
+      summary: Test configured sources
+      parameters:
+        - $ref: "#/components/parameters/AdminKey"
+      responses:
+        "200":
+          description: Source test results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SourceTestResponse"
+        "401":
+          description: Invalid administrator key
 components:
+  parameters:
+    AdminKey:
+      name: X-Admin-Key
+      in: header
+      required: true
+      schema: { type: string }
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +217,167 @@ components:
           type: string
       required:
         - status
+    Category:
+      type: object
+      properties:
+        type: { type: string }
+        label: { type: string }
+        tmdb: { type: boolean }
+        subcategories:
+          type: array
+          items:
+            type: object
+            properties:
+              slug: { type: string }
+              label: { type: string }
+      required: [type, label, tmdb, subcategories]
+    CategoriesResponse:
+      type: object
+      properties:
+        categories:
+          type: array
+          items: { $ref: "#/components/schemas/Category" }
+      required: [categories]
+    ContentResult:
+      type: object
+      properties:
+        title: { type: string }
+        poster: { type: ["string", "null"] }
+        quality: { type: string }
+        lang: { type: string }
+        pageUrls:
+          type: array
+          items: { type: string }
+        year: { type: ["string", "null"] }
+        seasons: { type: array, items: { type: string } }
+        meta: { type: object, additionalProperties: true }
+      required: [title, pageUrls]
+    SearchResponse:
+      type: object
+      properties:
+        query: { type: string }
+        type: { type: string }
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/ContentResult" }
+        blocked: { type: boolean }
+        errors: { type: array, items: { type: string } }
+      required: [query, type, results]
+    LatestResponse:
+      type: object
+      properties:
+        type: { type: string }
+        total: { type: integer }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/ContentResult" }
+        error: { type: ["string", "null"] }
+      required: [type, results]
+    Link:
+      type: object
+      properties:
+        host: { type: string }
+        url: { type: string }
+        type: { type: ["string", "null"] }
+        size: { type: ["string", "null"] }
+        quality: { type: ["string", "null"] }
+        lang: { type: ["string", "null"] }
+      required: [host, url]
+    Quality:
+      type: object
+      properties:
+        quality: { type: string }
+        lang: { type: string }
+        size: { type: string }
+        downloadLinks:
+          type: array
+          items: { $ref: "#/components/schemas/Link" }
+        streamLinks:
+          type: array
+          items: { $ref: "#/components/schemas/Link" }
+      required: [quality, downloadLinks, streamLinks]
+    ContentDetail:
+      type: object
+      properties:
+        title: { type: string }
+        originalTitle: { type: ["string", "null"] }
+        poster: { type: ["string", "null"] }
+        year: { type: ["string", "null"] }
+        synopsis: { type: ["string", "null"] }
+        actors: { type: ["string", "null"] }
+        director: { type: ["string", "null"] }
+        duration: { type: ["string", "null"] }
+        genres: { type: ["string", "null"] }
+        origin: { type: ["string", "null"] }
+        rating: { type: ["string", "null"] }
+        qualities:
+          type: array
+          items: { $ref: "#/components/schemas/Quality" }
+      required: [title, qualities]
+    DetailResponse:
+      type: object
+      properties:
+        result: { $ref: "#/components/schemas/ContentDetail" }
+        error: { type: string }
+      required: [result]
+    LinksResponse:
+      type: object
+      properties:
+        tmdb_id: { type: integer }
+        title: { type: string }
+        poster: { type: ["string", "null"] }
+        result_url: { type: ["string", "null"] }
+        total: { type: integer }
+        links:
+          type: array
+          items: { $ref: "#/components/schemas/Link" }
+        error: { type: string }
+      required: [tmdb_id, links]
+    Relay:
+      type: object
+      properties:
+        url: { type: string }
+        key: { type: string }
+      required: [url]
+    SourceSettings:
+      type: object
+      properties:
+        relays:
+          type: array
+          items: { $ref: "#/components/schemas/Relay" }
+        scraperapi_key: { type: string }
+        direct: { type: boolean }
+      required: [relays, scraperapi_key, direct]
+    SourceSettingsInput:
+      type: object
+      properties:
+        relays:
+          type: array
+          items: { $ref: "#/components/schemas/Relay" }
+        scraperapi_key: { type: string }
+        direct: { type: boolean }
+      required: [relays, scraperapi_key, direct]
+    SourceStatus:
+      type: object
+      properties:
+        relays: { type: array, items: { $ref: "#/components/schemas/Relay" } }
+        scraperapi: { type: boolean }
+        direct: { type: boolean }
+        proxyPool: { type: object, additionalProperties: true }
+        last: { type: object, additionalProperties: true }
+      required: [relays, scraperapi, direct]
+    OkResponse:
+      type: object
+      properties:
+        ok: { type: boolean }
+      required: [ok]
+    SourceTestResponse:
+      type: object
+      properties:
+        target: { type: string }
+        results:
+          type: array
+          items: { type: object, additionalProperties: true }
+      required: [target, results]
 
