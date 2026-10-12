@@ -22,6 +22,7 @@ import fetcher  # noqa: E402
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
+liens_router = APIRouter()
 
 
 @app.get("/", include_in_schema=False)
@@ -1163,45 +1164,119 @@ async def get_tmdb_title(tmdb_id: int, media_type: str = 'movie') -> Optional[st
         return None
 
 
-async def _liens_by_tmdb(tmdb_id: int, media_type: str, title: Optional[str]) -> dict:
-    """Search zone-telechargement for a TMDB ID and return a flat list of links."""
+async def _liens_by_tmdb(
+    tmdb_id: int,
+    media_type: str,
+    title: Optional[str],
+    season: Optional[int] = None,
+    episode: Optional[int] = None,
+) -> dict:
+    """Search the catalog by TMDB ID and optionally filter a TV season or episode."""
+    if tmdb_id < 1:
+        raise HTTPException(status_code=422, detail='tmdb_id doit être positif')
+    if season is not None and season < 1:
+        raise HTTPException(status_code=422, detail='season doit être positif')
+    if episode is not None and episode < 1:
+        raise HTTPException(status_code=422, detail='episode doit être positif')
+    if episode is not None and season is None:
+        raise HTTPException(status_code=422, detail='season est obligatoire avec episode')
+
     if not title:
         title = await get_tmdb_title(tmdb_id, media_type)
     if not title:
         return {
             'tmdb_id': tmdb_id,
+            'media_type': 'movie' if media_type in ('film', 'movie') else 'series',
+            'season': season,
+            'episode': episode,
+            'total': 0,
             'error': (
-                'Clé TMDB non configurée. '
-                'Ajoutez TMDB_API_KEY dans backend/.env ou passez ?title=Le+Titre'
+                'TMDB_API_KEY est nécessaire pour résoudre cet ID automatiquement. '
+                'Configurez cette clé dans Replit Secrets ou passez ?title=Le+Titre.'
             ),
             'links': [],
         }
 
-    type_map = {'film': 'movie', 'serie': 'tv', 'movie': 'movie', 'tv': 'tv'}
+    type_map = {
+        'film': 'movie', 'movie': 'movie',
+        'serie': 'tv', 'series': 'tv', 'tv': 'tv',
+    }
     type_ = type_map.get(media_type, 'movie')
 
-    items = await zt_search(title, type_)
+    queries = [title]
+    if season is not None and episode is not None:
+        queries = [
+            f'{title} S{season:02d}E{episode:02d}',
+            f'{title} saison {season}',
+            title,
+        ]
+    elif season is not None:
+        queries = [f'{title} saison {season}', title]
+
+    items = []
+    for query in queries:
+        items = filter_by_category(await zt_search(query, type_), type_)
+        if items:
+            break
     results = group_results(items)
 
     if not results:
-        return {'tmdb_id': tmdb_id, 'title': title, 'total': 0, 'links': []}
+        return {
+            'tmdb_id': tmdb_id,
+            'media_type': 'movie' if type_ == 'movie' else 'series',
+            'title': title,
+            'season': season,
+            'episode': episode,
+            'total': 0,
+            'links': [],
+        }
 
-    best = results[0]
     is_serie = type_ in ('tv', 'anime')
-    merged = await merge_qualities(best['pageUrls'][:3], is_serie)
-
+    best = results[0]
+    merged: dict = {'meta': {}, 'qualities': []}
     all_links: List[Dict[str, Any]] = []
-    for q in merged.get('qualities', []):
-        for lk in q.get('downloadLinks', []):
-            all_links.append({**lk, 'quality': q['quality'], 'lang': q['lang'], 'type': 'download'})
-        for lk in q.get('streamLinks', []):
-            all_links.append({**lk, 'quality': q['quality'], 'lang': q['lang'], 'type': 'stream'})
+
+    # Specific season/episode lookups may have several similarly titled pages.
+    # Try a few candidates until one contains links matching the requested scope.
+    candidates = results[:3] if season is not None else results[:1]
+    for candidate in candidates:
+        candidate_merged = await merge_qualities(candidate['pageUrls'][:3], is_serie)
+        candidate_links: List[Dict[str, Any]] = []
+        for quality in candidate_merged.get('qualities', []):
+            for link_type, key in (('download', 'downloadLinks'), ('stream', 'streamLinks')):
+                for link in quality.get(key, []):
+                    link_season = link.get('season')
+                    link_episode = link.get('episode')
+                    if season is not None and link_season != season:
+                        continue
+                    if episode is not None and link_episode != episode:
+                        continue
+                    hoster = link.get('host') or extract_host_and_protection(
+                        link.get('realUrl') or link.get('url', '')
+                    ).get('host', '')
+                    candidate_links.append({
+                        **link,
+                        'host': hoster,
+                        'hoster': hoster,
+                        'quality': quality.get('quality') or 'Inconnu',
+                        'lang': quality.get('lang', ''),
+                        'type': link_type,
+                    })
+
+        if candidate_links or season is None:
+            best = candidate
+            merged = candidate_merged
+            all_links = candidate_links
+            break
 
     return {
         'tmdb_id': tmdb_id,
+        'media_type': 'movie' if type_ == 'movie' else 'series',
         'title': merged.get('meta', {}).get('title') or title,
         'poster': merged.get('meta', {}).get('poster'),
         'result_url': best['pageUrls'][0] if best.get('pageUrls') else None,
+        'season': season,
+        'episode': episode,
         'total': len(all_links),
         'links': all_links,
     }
@@ -1281,11 +1356,41 @@ async def liens(
     return await _liens_by_tmdb(tmdb_id, media_type, title)
 
 
+@liens_router.get("/liens/movie/{tmdb_id}")
+async def liens_movie(tmdb_id: int, title: Optional[str] = None):
+    return await _liens_by_tmdb(tmdb_id, 'movie', title)
+
+
+@liens_router.get("/liens/series/{tmdb_id}")
+async def liens_series(tmdb_id: int, title: Optional[str] = None):
+    return await _liens_by_tmdb(tmdb_id, 'series', title)
+
+
+@liens_router.get("/liens/series/{tmdb_id}/{season}")
+async def liens_series_season(tmdb_id: int, season: int, title: Optional[str] = None):
+    return await _liens_by_tmdb(tmdb_id, 'series', title, season=season)
+
+
+@liens_router.get("/liens/series/{tmdb_id}/{season}/{episode}")
+async def liens_series_episode(
+    tmdb_id: int,
+    season: int,
+    episode: int,
+    title: Optional[str] = None,
+):
+    return await _liens_by_tmdb(tmdb_id, 'series', title, season=season, episode=episode)
+
+
+api_router.include_router(liens_router)
+
+
 app.include_router(api_router)
+app.include_router(liens_router)
 # The artifact router preserves its configured path prefix when proxying.
 # Keep the local /api routes too, while exposing the same endpoints through
 # the app's /zt-api service path.
 app.include_router(api_router, prefix="/zt-api")
+app.include_router(liens_router, prefix="/zt-api")
 
 
 @app.on_event("startup")

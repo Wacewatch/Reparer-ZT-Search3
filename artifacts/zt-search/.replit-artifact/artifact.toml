@@ -29,7 +29,7 @@ BASE_PATH = "/"
 
 [[services]]
 name = "search-api"
-paths = [ "/zt-api" ]
+paths = [ "/zt-api", "/liens/movie", "/liens/series" ]
 localPort = 25544
 
 [services.development]
