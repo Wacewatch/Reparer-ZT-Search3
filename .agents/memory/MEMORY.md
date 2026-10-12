@@ -1,1 +1,2 @@
 - [Artifact service path prefixes](artifact-service-path-prefixes.md) — mounted paths are preserved; backend routes must accept the full prefix, and commands run from the artifact directory.
+- [Python deployment installs](python-deployment-installs.md) — use `uv pip install --python "$(command -v python)"`; the deployed Python environment may not include `pip`.

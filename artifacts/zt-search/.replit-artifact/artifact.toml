@@ -36,10 +36,10 @@ localPort = 25544
 run = "cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 25544"
 
 [services.production]
-build = [ "python", "-m", "pip", "install", "-r", "backend/requirements.txt" ]
+build = [ "sh", "-c", "if [ -f backend/requirements.txt ]; then req=backend/requirements.txt; else req=artifacts/zt-search/backend/requirements.txt; fi; uv pip install --python \"$(command -v python)\" -r \"$req\"" ]
 
 [services.production.run]
-args = [ "sh", "-c", "cd backend && python -m uvicorn server:app --host 0.0.0.0 --port 25544" ]
+args = [ "sh", "-c", "if [ -d backend ]; then cd backend; else cd artifacts/zt-search/backend; fi && python -m uvicorn server:app --host 0.0.0.0 --port ${PORT:-25544}" ]
 
 [services.production.health.startup]
 path = "/zt-api/api/status"
