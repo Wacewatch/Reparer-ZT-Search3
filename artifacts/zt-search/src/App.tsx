@@ -148,14 +148,29 @@ function ResultGrid({ results, onSelect }: { results: ContentResult[]; onSelect:
   </div>;
 }
 
-function LinkRow({ link, index }: { link: ApiLink; index: number }) {
-  return <div data-testid={`link-row-${index}`} className="flex min-w-0 flex-wrap items-center gap-2.5 rounded-xl border border-white/[.055] bg-[#0e141a] px-3 py-2.5 sm:flex-nowrap">
-    <span className={`rounded-md border px-2 py-1 font-mono-ui text-[9px] uppercase tracking-wide ${link.type === 'stream' ? 'border-sky-300/20 bg-sky-200/[.07] text-sky-200' : 'border-emerald-300/20 bg-emerald-200/[.07] text-emerald-200'}`}>{link.type === 'stream' ? 'Streaming' : 'DDL'}</span>
-    {link.quality && <span data-testid={`link-quality-${index}`} className="rounded-md bg-white/[.06] px-2 py-1 font-mono-ui text-[9px] text-slate-300">{link.quality}</span>}
-    {link.lang && <span className="rounded-md bg-white/[.06] px-2 py-1 font-mono-ui text-[9px] text-slate-400">{link.lang}</span>}
-    <span data-testid={`link-host-${index}`} className="rounded-md bg-[#202a31] px-2 py-1 text-[10px] text-slate-300">{link.host || 'Source'}</span>
-    <span className="min-w-0 flex-1 truncate font-mono-ui text-[10px] text-slate-600" title={link.url}>{link.size || link.url}</span>
-    <a data-testid={`link-open-${index}`} href={link.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-300 px-3 py-2 text-[10px] font-bold text-[#091411] hover:bg-emerald-200">Ouvrir <ExternalLink size={11} /></a>
+type LinkWithRelease = ApiLink & {
+  hoster?: string | null;
+  release?: string | null;
+  releaseName?: string | null;
+  releaseSize?: string | null;
+};
+
+function LinkRow({ link, index }: { link: LinkWithRelease; index: number }) {
+  const releaseLabel = link.release?.trim() ||
+    [link.releaseName?.trim(), link.releaseSize?.trim() ? `(${link.releaseSize.trim()})` : '']
+      .filter(Boolean).join(' ');
+  return <div data-testid={`link-row-${index}`} className="flex min-w-0 flex-wrap items-center gap-2.5 rounded-xl border border-white/[.055] bg-[#0e141a] px-3 py-2.5">
+    {releaseLabel && <div data-testid={`link-release-${index}`} className="w-full basis-full break-words font-mono-ui text-[10px] leading-5 text-rose-300 [overflow-wrap:anywhere]">
+      <span className="mr-2 text-[9px] uppercase tracking-widest text-rose-400/70">Release</span>{releaseLabel}
+    </div>}
+    <div className="flex w-full min-w-0 items-center gap-2.5 sm:flex-1">
+      <span className={`shrink-0 rounded-md border px-2 py-1 font-mono-ui text-[9px] uppercase tracking-wide ${link.type === 'stream' ? 'border-sky-300/20 bg-sky-200/[.07] text-sky-200' : 'border-emerald-300/20 bg-emerald-200/[.07] text-emerald-200'}`}>{link.type === 'stream' ? 'Streaming' : 'DDL'}</span>
+      {link.quality && <span data-testid={`link-quality-${index}`} className="shrink-0 rounded-md bg-white/[.06] px-2 py-1 font-mono-ui text-[9px] text-slate-300">{link.quality}</span>}
+      {link.lang && <span className="shrink-0 rounded-md bg-white/[.06] px-2 py-1 font-mono-ui text-[9px] text-slate-400">{link.lang}</span>}
+      <span data-testid={`link-host-${index}`} className="shrink-0 rounded-md bg-[#202a31] px-2 py-1 text-[10px] text-slate-300">{link.hoster || link.host || 'Source'}</span>
+      <span className="min-w-0 flex-1 truncate font-mono-ui text-[10px] text-slate-600" title={link.url}>{link.size || link.url}</span>
+      <a data-testid={`link-open-${index}`} href={link.url} target="_blank" rel="noreferrer" className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-300 px-3 py-2 text-[10px] font-bold text-[#091411] hover:bg-emerald-200">Ouvrir <ExternalLink size={11} /></a>
+    </div>
   </div>;
 }
 
@@ -317,7 +332,10 @@ function MainPage() {
   const status = useGetSourceStatus();
 
   const runSearch = (query: string) => {
-    if (/^\d{1,8}$/.test(query.trim())) { navigate(`/liens/film/${query.trim()}`); return; }
+    if (/^\d{1,8}$/.test(query.trim())) {
+      if (normalizedType === 'movie') { navigate(`/liens/film/${query.trim()}`); return; }
+      if (normalizedType === 'tv') { navigate(`/liens/serie/${query.trim()}`); return; }
+    }
     setSearchText(query);
     setSearchCount((count) => count + 1);
     setSelected(null);

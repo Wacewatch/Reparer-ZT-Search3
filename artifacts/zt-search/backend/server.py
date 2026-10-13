@@ -7,6 +7,7 @@ import re
 import time
 import asyncio
 from difflib import SequenceMatcher
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlencode, quote, urlparse
@@ -359,15 +360,32 @@ SECTION_TYPE = {
     'top-films': 'movie', 'film-gratuit': 'movie', 'nouveaux-films': 'movie',
     'film-mkv': 'movie', 'web-2160p-1080p-720p': 'movie',
     'derniers-web-dl-ajoutes': 'movie', 'derniers-blu-rays-ajoutes': 'movie',
+    'films': 'movie', 'films-gratuits': 'movie', 'top-film': 'movie',
     'dernieres-series-vf-ajoutees': 'tv', 'dernieres-series-vostfr-ajoutees': 'tv',
     'telecharger-serie': 'tv', 'ancienne-serie': 'tv', 'series': 'tv',
+    'top-series': 'tv', 'series-vf': 'tv', 'series-vostfr': 'tv',
+    'series-hd': 'tv', 'series-web-dl': 'tv',
     'animes': 'anime', 'manga': 'anime',
+    'mangas': 'anime', 'top-animes': 'anime',
     'jeux-gratuit': 'jeux', 'derniers-jeux-ajoutes': 'jeux',
+    'jeux': 'jeux',
     'musique-mp3-gratuite': 'musique', 'musique': 'musique',
+    'musiques': 'musique',
     'ebooks': 'ebook', 'ebook': 'ebook',
+    'e-books': 'ebook',
     'logiciels': 'logiciel',
     'documentaire-gratuit': 'documentaire', 'spectacles': 'spectacle',
     'emissions-tv': 'emission', 'sport': 'sport',
+    'autres-videos': 'autre-video', 'autre-video': 'autre-video',
+    'autres-videos-gratuits': 'autre-video',
+}
+
+OTHER_VIDEO_CATEGORY_PATTERNS = {
+    'documentaire': re.compile(r'\b(?:documentaires?|documentary)\b', re.I),
+    'emission': re.compile(r'\b(?:émissions?|emissions?|reportages?|enquêtes?|enquetes?|magazines?)\b', re.I),
+    'spectacle': re.compile(r'\b(?:spectacles?|stand[\s-]?up|one[\s-]?man)\b', re.I),
+    'concert': re.compile(r'\bconcerts?\b', re.I),
+    'sport': re.compile(r'\b(?:sports?|matchs?|football|rugby|tennis|basketball|boxe)\b', re.I),
 }
 
 
@@ -456,7 +474,12 @@ def category_from_url(url: str) -> str:
     sec = m.group(1).lower()
     t = SECTION_TYPE.get(sec, '')
     # series released under film/format prefixes
-    if t == 'movie' and re.search(r'(?:-saison-|-serie-|-integrale-|\bS\d{1,2}\b)', url, re.I):
+    if t == 'movie' and re.search(
+        r'(?:-saison-\d+|-season-\d+|-serie-|-integrale-|'
+        r'\bS\d{1,2}(?:E\d{1,3})?(?:[._-]|$))',
+        url,
+        re.I,
+    ):
         t = 'tv'
     return t
 
@@ -465,18 +488,21 @@ def filter_by_category(items: list, type_: str) -> list:
     target = normalize_type_alias(type_)
     out = []
     for it in items:
-        t = category_from_url(it['pageUrl'])
-        if not t or t == target:
+        t = category_from_url(it.get('pageUrl', ''))
+        if t == 'autre-video' and target in OTHER_VIDEO_CATEGORY_PATTERNS:
+            text = ' '.join(
+                str(it.get(key) or '')
+                for key in ('title', 'slugTitle', 'pageUrl')
+            )
+            if OTHER_VIDEO_CATEGORY_PATTERNS[target].search(text):
+                t = target
+        if t == target:
             out.append(it)
     return out
 
 
 def extract_release_metadata(html: str) -> List[Dict[str, Any]]:
     """Extract red release labels and file sizes shown above hoster buttons."""
-    opening_tag = re.compile(
-        r'<(?P<tag>[a-z][a-z0-9]*)\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)>',
-        re.I | re.S,
-    )
     size_pattern = re.compile(
         r'\b(\d+(?:[.,]\d+)?\s*(?:Kio|Mio|Gio|Tio|Ko|Mo|Go|To|KB|MB|GB|TB))\b',
         re.I,
@@ -494,38 +520,87 @@ def extract_release_metadata(html: str) -> List[Dict[str, Any]]:
 
     found: List[Dict[str, Any]] = []
     seen = set()
-    for match in opening_tag.finditer(html):
-        if not color_pattern.search(match.group('attrs')):
-            continue
-        text = hd(re.sub(r'<[^>]+>', ' ', match.group('body')))
-        text = re.sub(r'\s+', ' ', text).strip()
-        if len(text) < 6 or text.lower() in seen:
-            continue
 
-        size_match = size_pattern.search(text)
-        if not size_match and not release_hint.search(text):
-            continue
+    class RedReleaseParser(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.active = []
+            self.position = 0
 
-        size = size_match.group(1).strip() if size_match else ''
-        release_name = text
-        if size_match:
-            release_name = (text[:size_match.start()] + text[size_match.end():]).strip()
-            release_name = release_name.strip(' ()[]{}-–|:')
-        if not release_name:
-            continue
+        def handle_starttag(self, tag, attrs):
+            attr_text = ' '.join(
+                f'{name}="{value or ""}"' for name, value in attrs
+            )
+            for candidate in self.active:
+                if tag == candidate['tag']:
+                    candidate['depth'] += 1
+                candidate['parts'].append(' ')
+            if color_pattern.search(attr_text):
+                self.active.append({
+                    'tag': tag, 'depth': 1, 'parts': [],
+                    'position': self.position,
+                })
+                self.position += 1
 
-        seen.add(text.lower())
-        found.append({
-            'position': match.start(),
-            'release': text,
-            'releaseName': release_name,
-            'releaseSize': size,
-        })
+        def handle_startendtag(self, tag, attrs):
+            for candidate in self.active:
+                candidate['parts'].append(' ')
+
+        def handle_data(self, data):
+            for candidate in self.active:
+                candidate['parts'].append(data)
+
+        def handle_endtag(self, tag):
+            retained = []
+            for candidate in self.active:
+                if tag == candidate['tag']:
+                    candidate['depth'] -= 1
+                    if candidate['depth'] == 0:
+                        self.add_candidate(candidate)
+                        continue
+                else:
+                    candidate['parts'].append(' ')
+                retained.append(candidate)
+            self.active = retained
+
+        def add_candidate(self, candidate):
+            text = hd(re.sub(r'\s+', ' ', ' '.join(candidate['parts']))).strip()
+            if len(text) < 6 or text.lower() in seen:
+                return
+            if re.match(r'^(?:qualit[eé]\b|liens?\b|t[eé]l[eé]charger\b)', text, re.I):
+                return
+            if len(text) > 250:
+                return
+
+            size_match = size_pattern.search(text)
+            if not size_match and not release_hint.search(text):
+                return
+            size = size_match.group(1).strip() if size_match else ''
+            release_name = text
+            if size_match:
+                release_name = (
+                    text[:size_match.start()] + text[size_match.end():]
+                ).strip(' ()[]{}-–|:')
+            if not release_name:
+                return
+
+            seen.add(text.lower())
+            found.append({
+                'position': candidate['position'],
+                'release': text,
+                'releaseName': release_name,
+                'releaseSize': size,
+            })
+
+    parser = RedReleaseParser()
+    parser.feed(html)
+    parser.close()
 
     found.sort(
         key=lambda entry: (
             bool(entry['releaseSize']),
             bool(release_hint.search(entry['release'])),
+            -len(entry['release']),
             -entry['position'],
         ),
         reverse=True,
@@ -1064,6 +1139,34 @@ async def search(
     items = await zt_search(q, type)
     items = filter_by_category(items, type)
     results = group_results(items)
+    query_year = extract_year(q) or None
+    for result in results:
+        result['_searchScore'] = _tmdb_result_score(result, [q], query_year)
+
+    # Search pages can omit a current exact title while returning older
+    # partial-title matches. Backfill only relevant entries from this type's
+    # recent catalog, then rank exact matches ahead of those partial matches.
+    if not results or max(result.get('_searchScore', 0) for result in results) < 60:
+        latest = await get_latest(type=normalize_type_alias(type), limit=48)
+        known_pages = {
+            page_url
+            for result in results
+            for page_url in result.get('pageUrls', [])
+        }
+        for result in latest.get('results', []):
+            score = _tmdb_result_score(result, [q], query_year)
+            if score < 45:
+                continue
+            page_urls = result.get('pageUrls', [])
+            if not page_urls or all(page_url in known_pages for page_url in page_urls):
+                continue
+            result['_searchScore'] = score
+            results.append(result)
+            known_pages.update(page_urls)
+
+    results.sort(key=lambda result: result.get('_searchScore', 0), reverse=True)
+    for result in results:
+        result.pop('_searchScore', None)
 
     last = fetcher.last_status
     return {
@@ -1275,7 +1378,7 @@ def _tmdb_result_score(result: dict, title_aliases: List[str], year: Optional[st
         if candidate == target:
             alias_score = 100.0
         elif target in candidate or candidate in target:
-            alias_score = max(60.0, 82.0 - abs(len(candidate) - len(target)))
+            alias_score = max(0.0, 58.0 - abs(len(candidate) - len(target)))
         else:
             alias_score = SequenceMatcher(None, target, candidate).ratio() * 60.0
         score = max(score, alias_score)
@@ -1306,6 +1409,7 @@ async def _liens_by_tmdb(
     if episode is not None and season is None:
         raise HTTPException(status_code=422, detail='season est obligatoire avec episode')
 
+    requested_year = extract_year(title or '') or None
     metadata = await get_tmdb_metadata(tmdb_id, media_type)
     if not title and metadata:
         title = metadata.get('title')
@@ -1322,6 +1426,11 @@ async def _liens_by_tmdb(
             ),
             'links': [],
         }
+    title = re.sub(
+        r'[\s(,–-]*\b(?:19|20)\d{2}\b\s*[)]?\s*$',
+        '',
+        title,
+    ).strip(' -–(),')
 
     type_map = {
         'film': 'movie', 'movie': 'movie',
@@ -1336,7 +1445,7 @@ async def _liens_by_tmdb(
             metadata.get('original_title') or '',
         ])
     title_aliases = list(dict.fromkeys(alias.strip() for alias in title_aliases if alias.strip()))
-    year = metadata.get('year') if metadata else None
+    year = (metadata.get('year') if metadata else None) or requested_year
     poster = metadata.get('poster') if metadata else None
 
     queries: List[str] = []
@@ -1370,6 +1479,27 @@ async def _liens_by_tmdb(
         result['_matchScore'] = _tmdb_result_score(result, title_aliases, year)
     results.sort(key=lambda result: result.get('_matchScore', 0), reverse=True)
 
+    # The site's full-text search can return only partial-title matches while
+    # the exact item is already present in its recent catalog (e.g. Animals).
+    # Fall back only when text search did not produce a confident title match.
+    if not results or results[0].get('_matchScore', 0) < 60:
+        latest = await get_latest(type=type_, limit=48)
+        latest_results = latest.get('results', [])
+        known_pages = {
+            page_url
+            for result in results
+            for page_url in result.get('pageUrls', [])
+        }
+        for result in latest_results:
+            page_urls = result.get('pageUrls', [])
+            if not page_urls or all(page_url in known_pages for page_url in page_urls):
+                continue
+            results.append(result)
+            known_pages.update(page_urls)
+        for result in results:
+            result['_matchScore'] = _tmdb_result_score(result, title_aliases, year)
+        results.sort(key=lambda result: result.get('_matchScore', 0), reverse=True)
+
     if not results:
         return {
             'tmdb_id': tmdb_id,
@@ -1383,7 +1513,7 @@ async def _liens_by_tmdb(
             'links': [],
         }
 
-    if results[0].get('_matchScore', 0) < 40:
+    if results[0].get('_matchScore', 0) < 60:
         return {
             'tmdb_id': tmdb_id,
             'media_type': 'movie' if type_ == 'movie' else 'series',
@@ -1494,10 +1624,7 @@ async def get_latest(type: str = Query('movie'), limit: int = Query(24, le=48)):
 
     items = scrape_listing(html, BASE_URL)
     # Filter by category BEFORE grouping (raw items have 'pageUrl')
-    if t != 'movie' or len(paths) > 1:
-        filtered = filter_by_category(items, t)
-        if filtered:
-            items = filtered
+    items = filter_by_category(items, t)
     results = group_results(items)
     subset = results[:limit]
     return {'type': type, 'total': len(subset), 'results': subset}

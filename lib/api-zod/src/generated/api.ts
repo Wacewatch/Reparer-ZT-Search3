@@ -124,7 +124,15 @@ export const GetContentDetailResponse = zod.object({
   "type": zod.string().nullish(),
   "size": zod.string().nullish(),
   "quality": zod.string().nullish(),
-  "lang": zod.string().nullish()
+  "lang": zod.string().nullish(),
+  "hoster": zod.string().nullish(),
+  "filename": zod.string().nullish(),
+  "protection": zod.string().nullish(),
+  "release": zod.string().nullish(),
+  "releaseName": zod.string().nullish(),
+  "releaseSize": zod.string().nullish(),
+  "season": zod.number().int().nullish(),
+  "episode": zod.number().int().nullish()
 })),
   "streamLinks": zod.array(zod.object({
   "host": zod.string(),
@@ -132,7 +140,15 @@ export const GetContentDetailResponse = zod.object({
   "type": zod.string().nullish(),
   "size": zod.string().nullish(),
   "quality": zod.string().nullish(),
-  "lang": zod.string().nullish()
+  "lang": zod.string().nullish(),
+  "hoster": zod.string().nullish(),
+  "filename": zod.string().nullish(),
+  "protection": zod.string().nullish(),
+  "release": zod.string().nullish(),
+  "releaseName": zod.string().nullish(),
+  "releaseSize": zod.string().nullish(),
+  "season": zod.number().int().nullish(),
+  "episode": zod.number().int().nullish()
 }))
 }))
 }),
@@ -161,7 +177,15 @@ export const GetContentLinksResponse = zod.object({
   "type": zod.string().nullish(),
   "size": zod.string().nullish(),
   "quality": zod.string().nullish(),
-  "lang": zod.string().nullish()
+  "lang": zod.string().nullish(),
+  "hoster": zod.string().nullish(),
+  "filename": zod.string().nullish(),
+  "protection": zod.string().nullish(),
+  "release": zod.string().nullish(),
+  "releaseName": zod.string().nullish(),
+  "releaseSize": zod.string().nullish(),
+  "season": zod.number().int().nullish(),
+  "episode": zod.number().int().nullish()
 })),
   "error": zod.string().optional()
 })

@@ -68,6 +68,22 @@ export interface Link {
   quality?: string | null;
   /** @nullable */
   lang?: string | null;
+  /** @nullable */
+  hoster?: string | null;
+  /** @nullable */
+  filename?: string | null;
+  /** @nullable */
+  protection?: string | null;
+  /** @nullable */
+  release?: string | null;
+  /** @nullable */
+  releaseName?: string | null;
+  /** @nullable */
+  releaseSize?: string | null;
+  /** @nullable */
+  season?: number | null;
+  /** @nullable */
+  episode?: number | null;
 }
 
 export interface Quality {

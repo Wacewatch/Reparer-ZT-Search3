@@ -283,6 +283,14 @@ components:
         size: { type: ["string", "null"] }
         quality: { type: ["string", "null"] }
         lang: { type: ["string", "null"] }
+        hoster: { type: ["string", "null"] }
+        filename: { type: ["string", "null"] }
+        protection: { type: ["string", "null"] }
+        release: { type: ["string", "null"] }
+        releaseName: { type: ["string", "null"] }
+        releaseSize: { type: ["string", "null"] }
+        season: { type: ["integer", "null"] }
+        episode: { type: ["integer", "null"] }
       required: [host, url]
     Quality:
       type: object
