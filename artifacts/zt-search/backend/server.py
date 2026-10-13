@@ -6,6 +6,7 @@ import logging
 import re
 import time
 import asyncio
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlencode, quote, urlparse
@@ -470,6 +471,68 @@ def filter_by_category(items: list, type_: str) -> list:
     return out
 
 
+def extract_release_metadata(html: str) -> List[Dict[str, Any]]:
+    """Extract red release labels and file sizes shown above hoster buttons."""
+    opening_tag = re.compile(
+        r'<(?P<tag>[a-z][a-z0-9]*)\b(?P<attrs>[^>]*)>(?P<body>.*?)</(?P=tag)>',
+        re.I | re.S,
+    )
+    size_pattern = re.compile(
+        r'\b(\d+(?:[.,]\d+)?\s*(?:Kio|Mio|Gio|Tio|Ko|Mo|Go|To|KB|MB|GB|TB))\b',
+        re.I,
+    )
+    release_hint = re.compile(
+        r'\b(?:19\d{2}|20\d{2}|2160p?|1080p?|720p?|480p?|WEB[-\s]?DL|WEBRIP|'
+        r'BLU[-\s]?RAY|BLURAY|BDRIP|HDLIGHT|TRUEFRENCH|VOSTFR|MULTI|X26[45]|H\.?26[45])\b',
+        re.I,
+    )
+    color_pattern = re.compile(
+        r'(?:color\s*:\s*(?:red|#f00|#ff0000)\b|'
+        r'color\s*=\s*["\']?(?:red|#f00|#ff0000)\b)',
+        re.I,
+    )
+
+    found: List[Dict[str, Any]] = []
+    seen = set()
+    for match in opening_tag.finditer(html):
+        if not color_pattern.search(match.group('attrs')):
+            continue
+        text = hd(re.sub(r'<[^>]+>', ' ', match.group('body')))
+        text = re.sub(r'\s+', ' ', text).strip()
+        if len(text) < 6 or text.lower() in seen:
+            continue
+
+        size_match = size_pattern.search(text)
+        if not size_match and not release_hint.search(text):
+            continue
+
+        size = size_match.group(1).strip() if size_match else ''
+        release_name = text
+        if size_match:
+            release_name = (text[:size_match.start()] + text[size_match.end():]).strip()
+            release_name = release_name.strip(' ()[]{}-–|:')
+        if not release_name:
+            continue
+
+        seen.add(text.lower())
+        found.append({
+            'position': match.start(),
+            'release': text,
+            'releaseName': release_name,
+            'releaseSize': size,
+        })
+
+    found.sort(
+        key=lambda entry: (
+            bool(entry['releaseSize']),
+            bool(release_hint.search(entry['release'])),
+            -entry['position'],
+        ),
+        reverse=True,
+    )
+    return found
+
+
 # Detail page scraper
 def scrape_detail_html(html: str, page_url: str = '') -> dict:
     empty_result = {
@@ -491,6 +554,8 @@ def scrape_detail_html(html: str, page_url: str = '') -> dict:
     cm = re.search(r'<div\s+id=["\']dle-content["\'][^>]*>(.*?)(?:<div\s+class=["\']c-share|<div\s+class=["\']pheading|<footer)', html, re.I | re.S)
     if cm:
         content = cm.group(1)
+    release_candidates = extract_release_metadata(content)
+    release_info = release_candidates[0] if release_candidates else {}
 
     # Big title
     big_title = ''
@@ -516,6 +581,10 @@ def scrape_detail_html(html: str, page_url: str = '') -> dict:
 
     # Meta extraction
     meta = {'title': big_title, 'poster': poster}
+    if release_info:
+        meta['release'] = release_info.get('release', '')
+        meta['releaseName'] = release_info.get('releaseName', '')
+        meta['releaseSize'] = release_info.get('releaseSize', '')
     meta_labels = {
         'Origine': 'origin', 'Nationalité': 'origin',
         'Réalisation': 'director', 'Réalisateur(s)': 'director', 'Réalisateur': 'director',
@@ -627,7 +696,7 @@ def scrape_detail_html(html: str, page_url: str = '') -> dict:
             se_info = extract_season_episode(big_title + ' ' + page_url)
 
     # Global size
-    global_size = meta.get('size_meta', '')
+    global_size = meta.get('size_meta', '') or release_info.get('releaseSize', '')
 
     # Extract links
     download_links = []
@@ -672,7 +741,10 @@ def scrape_detail_html(html: str, page_url: str = '') -> dict:
             'host': host_label.strip() or hp['host'],
             'protection': hp['protection'],
             'filename': link_text if link_text and len(link_text) > 2 else '',
-            'size': size or global_size,
+            'size': size or release_info.get('releaseSize') or global_size,
+            'release': release_info.get('release', ''),
+            'releaseName': release_info.get('releaseName', ''),
+            'releaseSize': release_info.get('releaseSize', ''),
             'season': link_se.get('season') or se_info.get('season'),
             'episode': link_se.get('episode') or se_info.get('episode'),
         }
@@ -1143,8 +1215,8 @@ async def relay_file(name: str):
 TMDB_BASE = 'https://api.themoviedb.org/3'
 
 
-async def get_tmdb_title(tmdb_id: int, media_type: str = 'movie') -> Optional[str]:
-    """Resolve a TMDB ID to its title. Returns None if TMDB_API_KEY not configured."""
+async def get_tmdb_metadata(tmdb_id: int, media_type: str = 'movie') -> Optional[Dict[str, Any]]:
+    """Resolve title aliases, year and poster for a TMDB ID."""
     key = os.environ.get('TMDB_API_KEY', '').strip()
     if not key:
         return None
@@ -1158,10 +1230,63 @@ async def get_tmdb_title(tmdb_id: int, media_type: str = 'movie') -> Optional[st
             if r.status_code != 200:
                 return None
             data = r.json()
-            return (data.get('title') or data.get('name') or
-                    data.get('original_title') or data.get('original_name'))
+            title = (
+                data.get('title') or data.get('name') or
+                data.get('original_title') or data.get('original_name')
+            )
+            original_title = data.get('original_title') or data.get('original_name')
+            date = data.get('release_date') or data.get('first_air_date') or ''
+            poster_path = data.get('poster_path') or ''
+            return {
+                'title': title,
+                'original_title': original_title,
+                'year': date[:4] or None,
+                'poster': (
+                    f'https://image.tmdb.org/t/p/w500{poster_path}'
+                    if poster_path else None
+                ),
+            }
     except Exception:
         return None
+
+
+async def get_tmdb_title(tmdb_id: int, media_type: str = 'movie') -> Optional[str]:
+    """Compatibility wrapper for callers needing only the localized title."""
+    metadata = await get_tmdb_metadata(tmdb_id, media_type)
+    return metadata.get('title') if metadata else None
+
+
+def _match_title(value: str) -> str:
+    normalized = clean_title(value).lower()
+    normalized = re.sub(r'\b(?:19|20)\d{2}\b', ' ', normalized)
+    return re.sub(r'[^a-z0-9]+', ' ', normalized).strip()
+
+
+def _tmdb_result_score(result: dict, title_aliases: List[str], year: Optional[str]) -> float:
+    candidate = _match_title(result.get('title') or '')
+    if not candidate:
+        return 0
+
+    score = 0.0
+    for alias in title_aliases:
+        target = _match_title(alias)
+        if not target:
+            continue
+        if candidate == target:
+            alias_score = 100.0
+        elif target in candidate or candidate in target:
+            alias_score = max(60.0, 82.0 - abs(len(candidate) - len(target)))
+        else:
+            alias_score = SequenceMatcher(None, target, candidate).ratio() * 60.0
+        score = max(score, alias_score)
+
+    result_year = str(result.get('year') or extract_year(result.get('title') or '') or '')
+    if year:
+        if result_year == str(year):
+            score += 40
+        elif result_year:
+            score -= 45
+    return score
 
 
 async def _liens_by_tmdb(
@@ -1181,8 +1306,9 @@ async def _liens_by_tmdb(
     if episode is not None and season is None:
         raise HTTPException(status_code=422, detail='season est obligatoire avec episode')
 
-    if not title:
-        title = await get_tmdb_title(tmdb_id, media_type)
+    metadata = await get_tmdb_metadata(tmdb_id, media_type)
+    if not title and metadata:
+        title = metadata.get('title')
     if not title:
         return {
             'tmdb_id': tmdb_id,
@@ -1203,32 +1329,72 @@ async def _liens_by_tmdb(
     }
     type_ = type_map.get(media_type, 'movie')
 
-    queries = [title]
-    if season is not None and episode is not None:
-        queries = [
-            f'{title} S{season:02d}E{episode:02d}',
-            f'{title} saison {season}',
-            title,
-        ]
-    elif season is not None:
-        queries = [f'{title} saison {season}', title]
+    title_aliases = [title]
+    if metadata:
+        title_aliases.extend([
+            metadata.get('title') or '',
+            metadata.get('original_title') or '',
+        ])
+    title_aliases = list(dict.fromkeys(alias.strip() for alias in title_aliases if alias.strip()))
+    year = metadata.get('year') if metadata else None
+    poster = metadata.get('poster') if metadata else None
 
+    queries: List[str] = []
+    for alias in title_aliases:
+        if season is not None and episode is not None:
+            queries.extend([
+                f'{alias} S{season:02d}E{episode:02d}',
+                f'{alias} saison {season}',
+            ])
+        elif season is not None:
+            queries.append(f'{alias} saison {season}')
+        elif year:
+            queries.append(f'{alias} {year}')
+        queries.append(alias)
+    queries = list(dict.fromkeys(query.strip() for query in queries if query.strip()))[:4]
+
+    search_batches = await asyncio.gather(
+        *[zt_search(query, type_) for query in queries]
+    )
     items = []
-    for query in queries:
-        items = filter_by_category(await zt_search(query, type_), type_)
-        if items:
-            break
+    seen_pages = set()
+    for batch in search_batches:
+        for item in filter_by_category(batch, type_):
+            page_url = item.get('pageUrl')
+            if page_url and page_url not in seen_pages:
+                seen_pages.add(page_url)
+                items.append(item)
     results = group_results(items)
+
+    for result in results:
+        result['_matchScore'] = _tmdb_result_score(result, title_aliases, year)
+    results.sort(key=lambda result: result.get('_matchScore', 0), reverse=True)
 
     if not results:
         return {
             'tmdb_id': tmdb_id,
             'media_type': 'movie' if type_ == 'movie' else 'series',
             'title': title,
+            'year': year,
+            'poster': poster,
             'season': season,
             'episode': episode,
             'total': 0,
             'links': [],
+        }
+
+    if results[0].get('_matchScore', 0) < 40:
+        return {
+            'tmdb_id': tmdb_id,
+            'media_type': 'movie' if type_ == 'movie' else 'series',
+            'title': title,
+            'year': year,
+            'poster': poster,
+            'season': season,
+            'episode': episode,
+            'total': 0,
+            'links': [],
+            'error': 'Aucun résultat assez proche du titre TMDB et de son année.',
         }
 
     is_serie = type_ in ('tv', 'anime')
@@ -1272,8 +1438,10 @@ async def _liens_by_tmdb(
     return {
         'tmdb_id': tmdb_id,
         'media_type': 'movie' if type_ == 'movie' else 'series',
-        'title': merged.get('meta', {}).get('title') or title,
-        'poster': merged.get('meta', {}).get('poster'),
+        'title': title,
+        'matched_title': merged.get('meta', {}).get('title') or best.get('title'),
+        'year': year or best.get('year'),
+        'poster': poster or merged.get('meta', {}).get('poster'),
         'result_url': best['pageUrls'][0] if best.get('pageUrls') else None,
         'season': season,
         'episode': episode,
